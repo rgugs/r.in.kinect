@@ -2,6 +2,7 @@
 #define ANALYSES_H
 
 extern "C" {
+#include <stdlib.h>
 #include <grass/gis.h>
 #include <grass/raster.h>
 #include <grass/vector.h>
@@ -27,7 +28,7 @@ int contours(const char *map, const char *output, float step)
     argv2[argc2++] = NULL;
     G_vspawn_ex(argv2[0], argv2);
 
-    putenv("WIND_OVERRIDE=contours_region");
+    setenv("WIND_OVERRID", "contours_region", 1);
 
     /* then run contours */
     argv[argc++] = "r.contour";
