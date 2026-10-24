@@ -1,8 +1,9 @@
 #ifndef ANALYSES_H
 #define ANALYSES_H
 
-extern "C" {
 #include <stdlib.h>
+
+extern "C" {
 #include <grass/gis.h>
 #include <grass/raster.h>
 #include <grass/vector.h>
