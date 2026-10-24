@@ -1,12 +1,25 @@
 #ifndef CALIBRATE_H
 #define CALIBRATE_H
 
-#undef n_
 #include <math.h>
 #include <tuple>
+#include <iostream>
+
+extern "C" {
+#include <grass/gis.h>
+#include <grass/glocale.h>
+}
+
+#undef n_
+#include <pcl/point_cloud.h>
+#include <pcl/ModelCoefficients.h>
+#include <pcl/segmentation/sac_segmentation.h>
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/common/common.h>
+#include <pcl/common/transforms.h>
 
+const double MAX_CLUSTER_DISTANCE = 0.015;
+const double TERRAIN_PROPORTION = 0.05; // Model must take up at least 5% of the scan area or will get "No clusters error" Original code had this at .03, so change back lower if needed
 
 inline double getAngle(const Eigen::Vector3f &v1, const Eigen::Vector3f &v2, const bool in_degree)
 {
@@ -82,9 +95,11 @@ void calibrate_bbox(pcl::shared_ptr<pcl::PointCloud<PointT>> &cloud) {
 
     std::vector<pcl::PointIndices> cluster_indices;
     pcl::EuclideanClusterExtraction<PointT> ec;
-    ec.setClusterTolerance(0.02); // 2cm
-    ec.setMinClusterSize(5000);
-    ec.setMaxClusterSize(500000);
+    int minClusterSize = (int) (TERRAIN_PROPORTION * cloud->size());
+    int maxClusterSize = (int) cloud->size();
+    ec.setClusterTolerance(MAX_CLUSTER_DISTANCE);
+    ec.setMinClusterSize(minClusterSize);
+    ec.setMaxClusterSize(maxClusterSize);
     ec.setSearchMethod(tree);
     ec.setInputCloud(cloud);
     ec.extract(cluster_indices);
@@ -125,9 +140,7 @@ Eigen::Matrix4f read_matrix(struct Option *calib_matrix_opt) {
 template<typename PointT>
 inline void rotate_with_matrix(pcl::shared_ptr<pcl::PointCloud<PointT>> &cloud,
                         Eigen::Matrix4f transform) {
-    typename pcl::PointCloud<PointT>::Ptr transformed_cloud (new pcl::PointCloud<PointT> (512, 424));
-    pcl::transformPointCloud (*cloud, *transformed_cloud, transform);
-    transformed_cloud.swap(cloud);
+                            pcl::transformPointCloud(*cloud, *cloud, transform);
 }
 
 #endif // CALIBRATE_H
