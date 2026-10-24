@@ -2,6 +2,8 @@
 #define BINNING_H
 
 #include <math.h>
+#include <string.h>
+#include <pcl/point_cloud.h>
 
 extern "C" {
 #include <grass/gis.h>
