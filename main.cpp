@@ -1,7 +1,7 @@
 /*
  ****************************************************************************
  *
- * MODULE:       v.in.kinect
+ * MODULE:       r.in.kinect
  * AUTHOR(S):    Anna Petrasova
  * PURPOSE:      Import points as vector from Kinect v2
  * COPYRIGHT:    (C) 2015 by the GRASS Development Team
@@ -17,12 +17,13 @@
 #include <pcl/filters/filter.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/passthrough.h>
+#include <pcl/filters/voxel_grid.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/extract_indices.h>
 #include <pcl/surface/mls.h>
+#include <pcl/common/common.h>
 #include <pcl/common/transforms.h>
 #include <pcl/common/angles.h>
-#include <pcl/common/common.h>
 #include <pcl/segmentation/sac_segmentation.h>
 #include <pcl/io/ply_io.h>
 
@@ -45,7 +46,6 @@ extern "C" {
 #include <stdlib.h>
 #include <signal.h>
 
-
 static volatile sig_atomic_t signaled = 0;
 static volatile sig_atomic_t signal_new_input = 0;
 
@@ -60,7 +60,7 @@ void signal_read_new_input (int param)
 }
 
 void update_input_region(char* raster, char* region, struct Cell_head &window, double &offset, bool &region3D) {
-    if (region){	/* region= */
+    if (region) {	/* region= */
         G_get_element_window(&window, "windows", region, "");
         offset = window.bottom;
         if (window.top != window.bottom)
@@ -93,7 +93,7 @@ void get_draw_type(char* draw_type_string, int &vect_type){
 void read_new_input(char* &routput, double &zrange_min, double &zrange_max,
                     double &clip_N, double &clip_S, double &clip_E, double &clip_W,
                     double &trim_tolerance, double &rotate, double &zexag, char* &method, char* &interp_method,
-                    int &numscan, double &smooth, double &resolution, bool &use_equalized,
+                    int &numscan, double &smooth, double &resolution, double &color_resolution, bool &use_equalized,
                     struct Cell_head &window, double &offset, bool &region3D,
                     char* &color_output, char* &voutput, char * &ply,
                     char* &contours_output, double &contours_step,
@@ -111,6 +111,8 @@ void read_new_input(char* &routput, double &zrange_min, double &zrange_max,
             tokens = G_tokenize(buf, "=");
             if (strcmp(tokens[0], "resolution") == 0)
                 resolution = atof(tokens[1]);
+            else if (strcmp(tokens[0], "color_resolution") == 0)
+                color_resolution = atof(tokens[1]);
             else if (strcmp(tokens[0], "smooth_radius") == 0)
                 smooth = atof(tokens[1]);
             else if (strcmp(tokens[0], "output") == 0) {
@@ -225,63 +227,54 @@ getMinMax(const pcl::PointCloud< PointT > &cloud, struct bound_box &bbox) {
 template<typename PointT>
 inline void clipNSEW(pcl::shared_ptr<pcl::PointCloud<PointT>> &cloud, double clip_N, double clip_S, double  clip_E, double clip_W) {
 
-    typename pcl::PointCloud<PointT>::Ptr cloud_filtered_pass (new pcl::PointCloud<PointT>(512, 424));
     pcl::PassThrough<PointT> pass;
     pass.setInputCloud(cloud);
     pass.setFilterFieldName("x");
     pass.setFilterLimits(-clip_W, clip_E);
-    pass.filter (*cloud_filtered_pass);
-    cloud_filtered_pass.swap (cloud);
+    pass.filter (*cloud);
 
     pass.setInputCloud(cloud);
     pass.setFilterFieldName("y");
     pass.setFilterLimits(-clip_S, clip_N);
-    pass.filter (*cloud_filtered_pass);
-    cloud_filtered_pass.swap (cloud);
+    pass.filter (*cloud);
 }
 
 template<typename PointT>
 inline void trimNSEW(pcl::shared_ptr<pcl::PointCloud<PointT>> &cloud, double trim_N, double trim_S, double  trim_E, double trim_W) {
 
     struct bound_box bbox;
-    typename pcl::PointCloud<PointT>::Ptr cloud_filtered_pass (new pcl::PointCloud<PointT>(512, 424));
     getMinMax(*cloud, bbox);
     pcl::PassThrough<PointT> pass;
     pass.setInputCloud(cloud);
     pass.setFilterFieldName("x");
     pass.setFilterLimits(bbox.W + trim_W, bbox.E - trim_E);
-    pass.filter (*cloud_filtered_pass);
-    cloud_filtered_pass.swap (cloud);
+    pass.filter (*cloud);
 
     pass.setInputCloud(cloud);
     pass.setFilterFieldName("y");
     pass.setFilterLimits(bbox.S + trim_S, bbox.N - trim_N);
-    pass.filter (*cloud_filtered_pass);
-    cloud_filtered_pass.swap (cloud);
+    pass.filter (*cloud);
 }
 
 template<typename PointT>
 inline void rotate_Z(pcl::shared_ptr<pcl::PointCloud<PointT>> &cloud, double angle) {
 
     Eigen::Affine3f transform_Z = Eigen::Affine3f::Identity();
-    // The same rotation matrix as before; tetha radians arround Z axis
+    // The same rotation matrix as before; tetha radians around Z axis
     transform_Z.rotate (Eigen::AngleAxisf (angle, Eigen::Vector3f::UnitZ()));
 
     // Executing the transformation
-    typename pcl::PointCloud<PointT>::Ptr transformed_cloud (new pcl::PointCloud<PointT>(512, 424));
-    pcl::transformPointCloud (*cloud, *transformed_cloud, transform_Z);
-    transformed_cloud.swap (cloud);
+    pcl::transformPointCloud (*cloud, *cloud, transform_Z);
 }
 
 template<typename PointT>
-inline void trim_Z(pcl::shared_ptr<pcl::PointCloud<PointT>> &cloud, double zrange_min, double zrange_max) {
-    typename pcl::PointCloud<PointT>::Ptr cloud_filtered_pass (new pcl::PointCloud<PointT>(512, 424));
-    pcl::PassThrough<pcl::PointXYZRGB> pass;
+inline void trim_Z(pcl::shared_ptr<pcl::PointCloud<PointT>> &cloud,
+                    double zrange_min, double zrange_max) {
+    pcl::PassThrough<PointT> pass;
     pass.setInputCloud(cloud);
     pass.setFilterFieldName("z");
     pass.setFilterLimits(-zrange_max, -zrange_min);
-    pass.filter (*cloud_filtered_pass);
-    cloud_filtered_pass.swap (cloud);
+    pass.filter(*cloud);
 
 }
 
@@ -292,7 +285,7 @@ inline void smooth(pcl::shared_ptr<pcl::PointCloud<PointT>> &cloud, double radiu
     typename pcl::search::KdTree<PointT>::Ptr tree (new pcl::search::KdTree<PointT>);
 
     // Output has the PointNormal type in order to store the normals calculated by MLS
-    pcl::shared_ptr<pcl::PointCloud<PointT>> mls_points (new pcl::PointCloud<PointT>(512, 424));
+    pcl::shared_ptr<pcl::PointCloud<PointT>> mls_points (new pcl::PointCloud<PointT>());
 
     // Init object (second point type is for the normals, even if unused)
     pcl::MovingLeastSquares<PointT, PointT> mls;
@@ -314,7 +307,7 @@ int median(std::vector<int> &v)
 {
     std::vector<int> new_;
     new_.reserve(v.size());
-    for (int i = 0; i < v.size(); i++) {
+    for (long unsigned int i = 0; i < v.size(); i++) {
         if (v[i] != 0)
             new_.push_back(v[i]);
     }
@@ -351,7 +344,7 @@ void autotrim(pcl::shared_ptr<pcl::PointCloud<PointT>> &cloud, double &clip_N, d
     clip_S = 0;
     clip_E = 0;
     clip_W = 0;
-    for (int i = 0; i < x_array.size(); i++) {
+    for (long unsigned int i = 0; i < x_array.size(); i++) {
         if (x_array[i] < tolerance * median_x) {
             clip_W = (i + 1) * resolution;
         }
@@ -365,7 +358,7 @@ void autotrim(pcl::shared_ptr<pcl::PointCloud<PointT>> &cloud, double &clip_N, d
         else
             break;
     }
-    for (int i = 0; i < y_array.size(); i++) {
+    for (long unsigned int i = 0; i < y_array.size(); i++) {
         if (y_array[i] < tolerance * median_y) {
             clip_S = (i + 1) * resolution;
         }
@@ -387,10 +380,10 @@ int main(int argc, char **argv)
 {
     struct GModule *module;
     struct Option *voutput_opt, *routput_opt, *color_output_opt, *ply_opt, *zrange_opt, *trim_opt, *rotate_Z_opt,
-            *smooth_radius_opt, *region_opt, *raster_opt, *zexag_opt, *resolution_opt,
-            *method_opt, *interp_method_opt, *calib_matrix_opt, *numscan_opt, *trim_tolerance_opt,
-            *contours_map, *contours_step_opt, *draw_opt, *draw_vector_opt, *draw_threshold_opt, *nprocs_interp,
-            *signal_file;
+        *smooth_radius_opt, *region_opt, *raster_opt, *zexag_opt, *resolution_opt, *color_resolution_opt,
+        *method_opt, *interp_method_opt, *calib_matrix_opt, *numscan_opt, *trim_tolerance_opt,
+        *contours_map, *contours_step_opt, *draw_opt, *draw_vector_opt, *draw_threshold_opt, *nprocs_interp,
+        *signal_file;
     struct Flag *loop_flag, *calib_flag, *calib_model_flag, *equalize_flag, *sensor_info_flag;
     struct Map_info Map;
     struct line_pnts *Points;
@@ -414,7 +407,7 @@ int main(int argc, char **argv)
     resolution_opt->key = "resolution";
     resolution_opt->type = TYPE_DOUBLE;
     resolution_opt->required = NO;
-    resolution_opt->answer = "0.002";
+    resolution_opt->answer = const_cast<char*>("0.002");
     resolution_opt->label = _("Raster resolution");
     resolution_opt->description = _("Recommended values between 0.001-0.003");
     resolution_opt->guisection = _("Output");
@@ -424,6 +417,14 @@ int main(int argc, char **argv)
     color_output_opt->description = _("Basename for color output");
     color_output_opt->guisection = _("Output");
     color_output_opt->required = NO;
+
+    color_resolution_opt = G_define_option();
+    color_resolution_opt->key = "color_resolution";
+    color_resolution_opt->type = TYPE_DOUBLE;
+    color_resolution_opt->required = NO;
+    color_resolution_opt->label = _("Raster resolution of color output");
+    color_resolution_opt->description = _("Recommended values between 0.001-0.003");
+    color_resolution_opt->guisection = _("Output");
 
     voutput_opt = G_define_standard_option(G_OPT_V_OUTPUT);
     voutput_opt->required = NO;
@@ -467,7 +468,7 @@ int main(int argc, char **argv)
     rotate_Z_opt->key = "rotate";
     rotate_Z_opt->type = TYPE_DOUBLE;
     rotate_Z_opt->required = NO;
-    rotate_Z_opt->answer = "0";
+    rotate_Z_opt->answer = const_cast<char*>("0");
     rotate_Z_opt->description = _("Rotate along Z axis");
     rotate_Z_opt->guisection = _("Georeferencing");
 
@@ -500,7 +501,7 @@ int main(int argc, char **argv)
     zexag_opt->type = TYPE_DOUBLE;
     zexag_opt->required = NO;
     zexag_opt->required = NO;
-    zexag_opt->answer = "1";
+    zexag_opt->answer = const_cast<char*>("1");
     zexag_opt->description = _("Vertical exaggeration");
     zexag_opt->guisection = _("Georeferencing");
 
@@ -526,7 +527,7 @@ int main(int argc, char **argv)
     nprocs_interp->key = "nprocs_interpolation";
     nprocs_interp->multiple = NO;
     nprocs_interp->type = TYPE_INTEGER;
-    nprocs_interp->answer = "1";
+    nprocs_interp->answer = const_cast<char*>("1");
     nprocs_interp->description = _("Number of processes for parallel interpolation");
 
     calib_matrix_opt = G_define_option();
@@ -538,7 +539,7 @@ int main(int argc, char **argv)
     calib_matrix_opt->guisection = _("Calibration");
 
     numscan_opt = G_define_option();
-    numscan_opt->answer = "1";
+    numscan_opt->answer = const_cast<char*>("1");
     numscan_opt->key = "numscan";
     numscan_opt->type = TYPE_INTEGER;
     numscan_opt->description = _("Number of scans to integrate");
@@ -579,7 +580,7 @@ int main(int argc, char **argv)
     draw_opt->type = TYPE_STRING;
     draw_opt->required = NO;
     draw_opt->options = "point,line,area";
-    draw_opt->answer = "point";
+    draw_opt->answer = const_cast<char*>("point");
     draw_opt->guisection = _("Drawing");
 
     draw_threshold_opt = G_define_option();
@@ -587,7 +588,7 @@ int main(int argc, char **argv)
     draw_threshold_opt->description = _("Brightness threshold for detecting laser pointer");
     draw_threshold_opt->type = TYPE_INTEGER;
     draw_threshold_opt->required = YES;
-    draw_threshold_opt->answer = "760";
+    draw_threshold_opt->answer = const_cast<char*>("760");
     draw_threshold_opt->guisection = _("Drawing");
 
     draw_vector_opt = G_define_standard_option(G_OPT_V_OUTPUT);
@@ -605,10 +606,10 @@ int main(int argc, char **argv)
     sensor_info_flag->description = _("Print sensor info and exit");
 
     G_option_required(calib_flag, calib_model_flag, routput_opt, sensor_info_flag,
-                      voutput_opt, ply_opt, draw_vector_opt, NULL);
+                      color_output_opt, voutput_opt, ply_opt, draw_vector_opt, NULL);
     G_option_exclusive(calib_flag, calib_model_flag, NULL);
     G_option_requires(routput_opt, resolution_opt, NULL);
-    G_option_requires(color_output_opt, resolution_opt, NULL);
+    G_option_requires(color_output_opt, resolution_opt, color_resolution_opt, NULL);
     G_option_requires(contours_map, contours_step_opt, routput_opt, NULL);
     G_option_requires(equalize_flag, routput_opt, NULL);
 
@@ -668,6 +669,10 @@ int main(int argc, char **argv)
 
     int numscan = atoi(numscan_opt->answer);
     char *color_output = color_output_opt->answer;
+    double color_resolution = resolution;
+    if (color_resolution_opt->answer) {
+        color_resolution = atof(color_resolution_opt->answer);
+    }
     char *voutput = voutput_opt->answer;
     char *ply = ply_opt->answer;
     char *contours_output = contours_map->answer;
@@ -701,8 +706,6 @@ int main(int argc, char **argv)
     Points = Vect_new_line_struct();
     Cats = Vect_new_cats_struct();
 
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>(512, 424));
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered_pass (new pcl::PointCloud<pcl::PointXYZRGB>(512, 424));
 
     // weights for binning IDW interpolation
     // size must be max 50
@@ -711,6 +714,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < max_weight_size; i++) {
         weights[i] = (double *)G_malloc(sizeof(double) * max_weight_size);
     }
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
 
     struct bound_box bbox;
     struct Cell_head cellhd, window;
@@ -741,7 +745,8 @@ int main(int argc, char **argv)
         if (signal_new_input == 1) {
             signal_new_input = 0;
             read_new_input(routput, zrange_min, zrange_max, clip_N, clip_S, clip_E, clip_W,
-                           trim_tolerance, angle, zexag, method, interp_method, numscan, smooth_radius, resolution, use_equalized,
+                           trim_tolerance, angle, zexag, method, interp_method, numscan, smooth_radius,
+                           resolution, color_resolution, use_equalized,
                            window, offset, region3D,
                            color_output, voutput, ply,
                            contours_output, contours_step,
@@ -792,7 +797,7 @@ int main(int argc, char **argv)
         if (draw_output) {
             int maxbright = 0;
             int maxbright_idx = 0;
-            for (int i=0; i < cloud->points.size(); i++) {
+            for (long unsigned int i = 0; i < cloud->points.size(); i++) {
                 Eigen::Vector3i rgbv = cloud->points[i].getRGBVector3i();
                 int sum = rgbv[0] + rgbv[1] + rgbv[2];
                 if (sum > maxbright) {
@@ -821,8 +826,7 @@ int main(int argc, char **argv)
         sor.setInputCloud(cloud);
         sor.setMeanK(20);
         sor.setStddevMulThresh(0.5);
-        sor.filter(*cloud_filtered_pass);
-        cloud_filtered_pass.swap (cloud);
+        sor.filter(*cloud);
 
         if(calib_model_flag->answer) {
             calibrate_bbox(cloud);
@@ -854,12 +858,12 @@ int main(int argc, char **argv)
             draw_z.clear();
             last_detected_loop_count = 1e6;
         }
-        if (voutput|| routput || ply || color_output) {
+        getMinMax(*cloud, bbox);
+        if (voutput|| routput || ply) {
             if (smooth_radius_opt->answer)
                 smooth(cloud, smooth_radius);
 
             // get Z scaling
-            getMinMax(*cloud, bbox);
             scale = ((window.north - window.south) / (bbox.N - bbox.S) +
                      (window.east - window.west) / (bbox.E - bbox.W)) / 2;
         }
@@ -877,7 +881,7 @@ int main(int argc, char **argv)
                 if (Vect_open_tmp_new(&Map, tmp_name, WITH_Z) < 0)
                     G_fatal_error(_("Unable to create temporary vector map <%s>"), tmp_name);
             }
-            for (int i=0; i < cloud->points.size(); i++) {
+            for (long unsigned int i = 0; i < cloud->points.size(); i++) {
                 Vect_reset_line(Points);
                 Vect_reset_cats(Cats);
                 if (region3D)
@@ -899,20 +903,16 @@ int main(int argc, char **argv)
             Vect_close(&Map);
         }
 
-        if (routput || color_output) {
-            if (routput) {
-                if (strcmp(method, "splines") != 0) {
-                    bool interpolate_idw = strcmp(method, "interpolation") == 0;
-                    binning(cloud, routput, &bbox, resolution,
-                            scale, zexag, region3D ? -zrange_max : bbox.B, offset, method,
-                            interpolate_idw, weights);
-                }
-                Rast_get_cellhd(routput, "", &cellhd);
-            }
-            if (color_output) {
-                binning_color(cloud, color_output, &bbox, resolution);
-                Rast_get_cellhd(get_color_name(color_output, "r"), "", &cellhd);
-            }
+        if (routput) {
+            bool use_splines = strcmp(method, "interpolation") == 0 &&
+                                strcmp(interp_method, "splines") == 0;
+            if (!use_splines) {
+                bool interpolate_idw = strcmp(method, "interpolation") == 0;
+                binning(cloud, routput, &bbox, resolution,
+                    scale, zexag, region3D ? -zrange_max : bbox.B, offset, method,
+                    interpolate_idw, weights);
+                    }
+                    Rast_get_cellhd(routput, "", &cellhd);
 
             // georeference horizontally
             window.rows = cellhd.rows;
@@ -924,16 +924,7 @@ int main(int argc, char **argv)
             cellhd.west = window.west;
             cellhd.ns_res = window.ns_res;
             cellhd.ew_res = window.ew_res;
-            if (routput)
-                Rast_put_cellhd(routput, &cellhd);
-            if (color_output) {
-                char* output_r = get_color_name(color_output, "r");
-                char* output_g = get_color_name(color_output, "g");
-                char* output_b = get_color_name(color_output, "b");
-                Rast_put_cellhd(output_r, &cellhd);
-                Rast_put_cellhd(output_g, &cellhd);
-                Rast_put_cellhd(output_b, &cellhd);
-            }
+            Rast_put_cellhd(routput, &cellhd);
             set_default_color(routput);
             if (contours_output) {
                 contours(routput, contours_output, contours_step);
@@ -942,10 +933,30 @@ int main(int argc, char **argv)
                 equalized(routput);
             }
         }
+        if (color_output) {
+            binning_color(cloud, color_output, &bbox, color_resolution);
+            char* output_r = get_color_name(color_output, "r");
+            char* output_g = get_color_name(color_output, "g");
+            char* output_b = get_color_name(color_output, "b");
+            Rast_get_cellhd(output_r, "", &cellhd);
+            // georeference horizontally
+            window.rows = cellhd.rows;
+            window.cols = cellhd.cols;
+            G_adjust_Cell_head(&window, 1, 1);
+            cellhd.north = window.north;
+            cellhd.south = window.south;
+            cellhd.east = window.east;
+            cellhd.west = window.west;
+            cellhd.ns_res = window.ns_res;
+            cellhd.ew_res = window.ew_res;
+            Rast_put_cellhd(output_r, &cellhd);
+            Rast_put_cellhd(output_g, &cellhd);
+            Rast_put_cellhd(output_b, &cellhd);
+        }
         // write to PLY
         if (ply) {
             pcl::PLYWriter writer;
-            for (int i=0; i < cloud->points.size(); i++) {
+            for (long unsigned int i = 0; i < cloud->points.size(); i++) {
                 if (region3D)
                     cloud->points[i].z = (cloud->points[i].z + zrange_max) * scale / zexag + offset;
                 else
